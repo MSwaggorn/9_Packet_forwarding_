@@ -16,10 +16,10 @@
   ******************************************************************************
   */
 
-// MMCP Protokoll Version 5
-// Abgabe ULP 1
+// Packetverwaltung als Application auf MMCP Protokoll Version 5
+// Abgabe ULP 3
 // Moritz Prenzlow, 1152710
-// 18.10.2023
+// 12.12.2023
 // Team 03
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
@@ -29,11 +29,26 @@
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+//TODO: what if busy in state and receives ap nr other than 50 (poll)??? Dürfen prozesse kontrolllflüsse zurücksetzen??
 typedef uint8_t crc;
+typedef enum {FALSE, TRUE} BOOL;
+
+/* LED stuff */
+typedef union
+{
+  struct
+  {
+    uint8_t b;
+    uint8_t r;
+    uint8_t g;
+  } color;
+  uint32_t data;
+} PixelRGB_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -64,6 +79,16 @@ typedef uint8_t crc;
 #define WIDTH  (8 * sizeof(crc))
 #define TOPBIT (1 << (WIDTH - 1))
 #define POLYNOMIAL 0x9b
+
+/* LED stuff */
+#define NEOPIXEL_ZERO 34
+#define NEOPIXEL_ONE 67
+#define NUM_PIXELS 8
+#define DMA_BUFF_SIZE (NUM_PIXELS * 24) + 1
+
+//* Packet forwarding defines *//
+#define NUM_NEIGHBOURS 4
+#define LAGER_SIZE 6
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,6 +97,11 @@ typedef uint8_t crc;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+DMA_HandleTypeDef hdma_tim2_ch3_up;
+
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
@@ -87,12 +117,68 @@ uint8_t L1_PDU[L1_PDU_size] = {0};
 uint8_t cnt = 0; // button press counter
 unsigned long millis = 0; // elapsed milliseconds for button debouncing
 unsigned long lastPress = 0; // time of last rising edge (button press)
+
+/* LED stuff */
+uint32_t dmaBuffer[DMA_BUFF_SIZE] = {0};
+uint32_t *pBuff;
+uint8_t LEDColors[17][3] = { {0, 0, 0}, {255, 255, 255},  {255, 0, 0},
+		 {0, 255, 0},  {0, 0, 255},  {0, 255, 255},
+		 {255, 0, 255},  {255, 255, 0},  {191, 128, 64},
+		 {191, 255, 0},  {128, 128, 0},  {255, 128, 0},
+		 {255, 191, 191},  {191, 0, 64},  {0, 128, 128},
+		 {128, 0, 128},  {224, 176, 255} };
+PixelRGB_t pixels[NUM_PIXELS] = {0}; // TODO: SA/RT
+BOOL timer_irq = FALSE; // gets set HIGH every 750ms
+
+//BOOL count = FALSE;
+
+// Utility for ISR (not specified in SA/RT)
+uint16_t neighbourSendPins[NUM_NEIGHBOURS] = {S_N1_Pin, S_N2_Pin, S_N3_Pin, S_N4_Pin};
+const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {2, 5, 6, 7}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
+
+//* Packet forwarding begin *//
+
+// Speicher
+uint8_t state;
+uint8_t errorId;
+uint8_t partnerId;
+uint8_t packageId;
+uint8_t Lager[6] = {0};
+uint8_t tempLager[6] = {0};
+uint8_t ApNr;
+
+// Kontrollfluesse
+BOOL receive = FALSE;
+BOOL passOn = FALSE;
+BOOL create = FALSE;
+BOOL deliver = FALSE;
+BOOL poll = FALSE;
+BOOL await = FALSE;
+BOOL finishedSend = FALSE;
+BOOL finishedStore = FALSE;
+BOOL failure = FALSE;
+BOOL receivedSDU = FALSE;
+BOOL GPIO_neighbour_in = FALSE;
+
+// Zustandstyp + Zustandsvariable
+typedef enum {Z_idle, Z_processing, Z_failure, Z_deliver, Z_passOn, Z_sent, Z_awaiting, Z_received} zustand_t;
+zustand_t zustand;
+
+// Aktionentyp + Aktionsvariable
+typedef enum {A_idle, A_setup, A_deliver, A_passOn, A_failure, A_pulse, A_updateLager, A_await, A_create, A_handleStore, A_storeAwait, A_storeCreate, A_checkFailure} aktion_t;
+aktion_t aktion;
+//* Packet forwarding end *//
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART1_UART_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 void AL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart);
@@ -108,17 +194,483 @@ void L3_send(uint8_t L3_SDU[]);
 void L2_send(uint8_t L2_SDU[]);
 void L1_send(uint8_t L1_SDU[]);
 
+void ApNr_42(uint8_t L7_SDU[], uint8_t L7_SDU_send[]);
+void ApNr_43(uint8_t L7_SDU[], uint8_t L7_SDU_send[]);
+void ApNr_50(uint8_t L7_SDU[], uint8_t L7_SDU_send[]);
 void ApNr_100(uint8_t L7_SDU[], uint8_t L7_SDU_send[]);
 void ApNr_101(uint8_t L7_SDU_send[]);
 void ApNr_102(uint8_t L7_SDU_send[]);
 void ApNr_103(uint8_t L7_SDU_send[]);
 
 crc crcSlow(uint8_t const message[], int nBytes);
+
+//* Packet forwarding begin *//
+void stateProcessing(void);
+void stateAwait(void);
+void stateReceived(void);
+void stateSent(void);
+void stateFailure(void);
+void handleStore(void);
+void handleSend(void);
+void updateLager(void);
+void animateSend(void);
+void animateReceive(void);
+void animateCreate(void);
+void animateDeliver(void);
+void pulse(void);
+void resetData(void);
+//* Packet forwarding end *//
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* LED stuff */
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
+{
+  HAL_TIM_PWM_Stop_DMA(htim, TIM_CHANNEL_3);
+}
 
+void writeLEDs(PixelRGB_t* pixel){
+	int i,j;
+
+	pBuff = dmaBuffer;
+	  for (i = 0; i < NUM_PIXELS; i++)
+	  {
+		 for (j = 23; j >= 0; j--)
+		 {
+		   if ((pixel[i].data >> j) & 0x01)
+		   {
+			 *pBuff = NEOPIXEL_ONE;
+		   }
+		   else
+		   {
+			 *pBuff = NEOPIXEL_ZERO;
+		   }
+		   pBuff++;
+	   }
+	  }
+	  dmaBuffer[DMA_BUFF_SIZE - 1] = 0; // last element must be 0!
+
+	  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_3, dmaBuffer, DMA_BUFF_SIZE);
+}
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if(htim->Instance == TIM3){
+		timer_irq = TRUE;
+	}
+}
+//* Packet forwarding begin *//
+// DFD processes //
+void stateProcessing(void){
+	state = 0;
+}
+void stateAwait(void){
+	state = 1;
+}
+void stateReceived(void){
+	state = 2;
+}
+void stateSent(void){
+	state = 3;
+}
+void stateFailure(void){
+	state = 4;
+}
+void handleStore(void){
+	int i;
+
+	// copy Lager to tempLager
+	for(i = 0; i < LAGER_SIZE; i++){
+		tempLager[i] = Lager[i];
+	}
+
+
+	// put package in first free spot (0) in tempLager
+	for(i = 0; i < LAGER_SIZE; i++){
+		if(tempLager[i] == 0){
+			tempLager[i] = packageId;
+			break;
+		}
+	}
+
+	finishedStore = TRUE;
+}
+void handleSend(void){
+	int i;
+
+	// copy Lager to tempLager
+	for(i = 0; i < LAGER_SIZE; i++){
+		tempLager[i] = Lager[i];
+	}
+
+
+	// delete package out of tempLager
+	for(i = 0; i < LAGER_SIZE; i++){
+		if(tempLager[i] == packageId){
+			tempLager[i] = 0;
+			break;
+		}
+	}
+
+	finishedSend = TRUE;
+}
+void updateLager(void){
+	int i;
+
+	// copy tempLager to Lager
+	for(i = 0; i < LAGER_SIZE; i++){
+		Lager[i] = tempLager[i];
+	}
+}
+void animateSend(void){
+	 // TODO: animatoin
+	for(int i = 0; i < LAGER_SIZE; i++){
+		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
+		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
+		pixels[i+1].color.b = (uint8_t)LEDColors[tempLager[i]][2]*0.1;
+
+	}
+	writeLEDs(pixels);
+}
+void animateReceive(void){
+ // TODO: animatoin
+	for(int i = 0; i < LAGER_SIZE; i++){
+		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
+		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
+		pixels[i+1].color.b = (uint8_t)LEDColors[tempLager[i]][2]*0.1;
+
+	}
+	writeLEDs(pixels);
+}
+void animateCreate(void){
+	/*
+	// Blink first LED once
+	while(1){
+		if(timer_irq){
+			timer_irq = FALSE;
+			pixels[0].color.g = (uint8_t)LEDColors[packageId][1]*0.1; // TODO: SA/RT
+			pixels[0].color.r = (uint8_t)LEDColors[packageId][0]*0.1;
+			pixels[0].color.b = (uint8_t)LEDColors[packageId][2]*0.1;
+			writeLEDs(pixels);
+		}
+		if(timer_irq){
+			timer_irq = FALSE;
+			pixels[0].color.g = 0; // TODO: SA/RT
+			pixels[0].color.r = 0;
+			pixels[0].color.b = 0;
+			writeLEDs(pixels);
+			break;
+		}
+	}*/
+
+	for(int i = 0; i < LAGER_SIZE; i++){
+		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
+		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
+		pixels[i+1].color.b = (uint8_t)LEDColors[tempLager[i]][2]*0.1;
+
+	}
+	writeLEDs(pixels);
+}
+void animateDeliver(void){
+	 // TODO: animatoin
+	for(int i = 0; i < LAGER_SIZE; i++){
+		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
+		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
+		pixels[i+1].color.b = (uint8_t)LEDColors[tempLager[i]][2]*0.1;
+
+	}
+	writeLEDs(pixels);
+}
+void pulse(void){
+	uint8_t partnerNumber = 0;
+	uint8_t i = 0;
+
+	// find out number of partner
+	for(i = 0; i < NUM_NEIGHBOURS; i++){
+		if(neighbourIDs[i] == partnerId){
+			partnerNumber = i;
+			break;
+		}
+	}
+
+	// toggle corresponding pin for 1ms // TODO: actually implement pulse with a state between passOn and sent (passOnPulse or something) and a timer
+	HAL_GPIO_WritePin (GPIOC, neighbourSendPins[partnerNumber], GPIO_PIN_SET);
+	HAL_Delay(1);
+	HAL_GPIO_WritePin (GPIOC, neighbourSendPins[partnerNumber], GPIO_PIN_RESET);
+}
+void checkFailure(void){
+	BOOL lagerFull = TRUE;
+	BOOL packetInLager = FALSE;
+	BOOL packetNoExist = TRUE;
+	BOOL unknownNeighbour = TRUE;
+	BOOL unknownPacket = FALSE;
+
+	int i;
+
+	// check if neighbour is known
+	if(partnerId == 0){ //TODO: fixed with idle in processing, but that should not be there
+		unknownNeighbour = FALSE; // neighbourId is valid
+	}
+	for(i = 0; i < NUM_NEIGHBOURS; i++){
+		if(partnerId == neighbourIDs[i]){
+			unknownNeighbour = FALSE; // neighbourId is valid
+			break;
+		}
+	}
+
+	if(ApNr == 42){ // create or await is set
+		// check if Lager is already completely filled
+		for(i = 0; i < LAGER_SIZE; i++){
+			if(Lager[i] == 0){
+				lagerFull = FALSE; // Lager is not completely filled
+				break;
+			}
+		}
+
+		packetNoExist = FALSE;
+		// check if packageId is already stored in Lager
+		for(i = 0; i < LAGER_SIZE; i++){
+			if(Lager[i] == packageId){
+				packetInLager = TRUE; // packageId already exists in Lager
+				break;
+			}
+		}
+	}
+
+	if(ApNr == 43){ // deliver or passOn is set
+		lagerFull = FALSE;
+
+		// Check if packageId exists in Lager
+		for(i = 0; i < LAGER_SIZE; i++){
+			if(Lager[i] == packageId){
+				packetNoExist = FALSE; // packageId does exist in Lager
+			}
+		}
+	}
+
+	// check if package has a valid number
+	if((packageId < 0) || (packageId > 16)){
+		unknownPacket = TRUE;
+	}
+
+
+	// set errorId according to failure
+	if(packetInLager){
+		failure = TRUE;
+		errorId = 1;
+	}
+	else if(lagerFull){
+		failure = TRUE;
+		errorId = 2;
+	}
+	else if(packetNoExist){
+		failure = TRUE;
+		errorId = 3;
+	}
+	else if(unknownNeighbour){
+		failure = TRUE;
+		errorId = 4;
+	}
+	else if(unknownPacket){
+		failure = TRUE;
+		errorId = 5; //TODO: Minispezifikation
+	}
+}
+void resetData(){
+	packageId = 0;
+	partnerId = 0;
+	errorId = 0;
+	receive = FALSE;
+	passOn = FALSE;
+	create = FALSE;
+	deliver = FALSE;
+	poll = FALSE;
+	await = FALSE;
+	ApNr = 0;
+	failure = FALSE;
+	finishedStore = FALSE;
+	finishedSend = FALSE;
+	receivedSDU = FALSE;
+}
+
+// STD
+void std(void){
+	switch(zustand){
+	case Z_idle:
+		if (receivedSDU){
+			aktion = A_checkFailure;
+			zustand = Z_processing;
+			receivedSDU = FALSE; //*
+		}
+		else if(poll || (!receivedSDU)){ //TODO: SA/RT
+			aktion = A_idle;
+			poll = FALSE; //*
+		}
+		/*
+		else if((!poll) && (!receivedSDU)){
+			aktion = A_idle; // so it is not stuck in A_reset
+		}
+		else if(!receivedSDU){
+			aktion = A_idle; // so it is not stuck in A_reset
+		}*/
+		break;
+
+
+	case Z_processing:
+		if (create && (!failure)){ // no poll (transient state), because processing + packageId should only be reported in modes passOn and deliver
+			aktion = A_create;
+			zustand = Z_awaiting;
+			poll = FALSE; //*
+		}
+		else if (await && (!failure)){ // no poll (transient state), because processing + packageId should only be reported in modes passOn and deliver
+			aktion = A_await;
+			zustand = Z_awaiting;
+			poll = FALSE; //*
+		}
+		else if (deliver && (!failure)){
+			aktion = A_deliver;
+			zustand = Z_deliver;
+		}
+		else if (passOn && (!failure)){
+			aktion = A_passOn;
+			zustand = Z_passOn;
+		}
+		else if (failure){
+			aktion = A_failure;
+			zustand = Z_failure;
+			poll = FALSE; //*
+		}
+		/*
+		else{
+			aktion = A_idle; // TODO: why do we need this so failure for unknown neighbour works??
+		}*/
+		break;
+
+	case Z_failure:
+		if(poll){
+			aktion = A_setup;
+			zustand = Z_idle;
+			poll = FALSE; //*
+		}
+		break;
+
+	case Z_deliver:
+		if (poll && finishedSend){
+			aktion = A_updateLager;
+			zustand = Z_sent;
+			poll = FALSE; //*
+		}
+		break;
+
+	case Z_passOn:
+		if (poll && finishedSend){
+			aktion = A_pulse;
+			zustand = Z_sent;
+			poll = FALSE; //*
+		}
+		break;
+
+	case Z_sent:
+		if (poll){
+			aktion = A_setup;
+			zustand = Z_idle;
+			poll = FALSE; //*
+		}
+		break;
+
+	case Z_awaiting: // TODO: no GPIO needed for going from awating to send?? maybe something to do with pull up, but it used to work?
+		if (GPIO_neighbour_in && await){
+			aktion = A_handleStore;
+			GPIO_neighbour_in = FALSE; //*
+		}
+		else if (poll && finishedStore && await){
+			aktion = A_storeAwait;
+			zustand = Z_received;
+			poll = FALSE; //*
+		}
+		else if (poll && finishedStore && create){ //else if (poll && finishedStore && create && count	){
+			aktion = A_storeCreate;
+			zustand = Z_received;
+			poll = FALSE; //*
+			//count = FALSE;
+		}
+		break;
+
+	case Z_received:
+		if (poll){
+			aktion = A_setup;
+			zustand = Z_idle;
+			poll = FALSE; //*
+		}
+		else if(!poll){
+			aktion = A_idle; //*
+		}
+		break;
+	}
+}
+
+//* Kontrollflüsse werden im Interrupt gesetzt und müssen deshalb hier zurückgesetzt werden
+
+// PAT
+void pat(void){
+	switch(aktion){
+	case A_setup:
+		resetData(); // TODO: SA/RT
+		stateProcessing();
+		break;
+	case A_deliver: // TODO: A_deliver and A_passOn are identical
+		stateProcessing();
+		handleSend();
+		break;
+	case A_passOn:
+		stateProcessing();
+		handleSend();
+		break;
+	case A_failure:
+		stateFailure();
+		break;
+	case A_pulse:
+		animateSend();
+		pulse();
+		updateLager();
+		stateSent();
+		break;
+	case A_updateLager:
+		animateDeliver();
+		updateLager();
+		stateSent();
+		break;
+	case A_await:
+		stateAwait();
+		break;
+	case A_create:
+		stateAwait();
+		handleStore();
+		break;
+	case A_handleStore:
+		handleStore();
+		break;
+	case A_storeAwait:
+		animateReceive();
+		updateLager();
+		stateReceived();
+		break;
+	case A_storeCreate:
+		animateCreate();
+		updateLager();
+		stateReceived();
+		break;
+	case A_checkFailure:
+		checkFailure();
+		stateProcessing();
+		break;
+
+	//TODO: SA/RT
+	case A_idle:
+		break;
+	}
+}
+//* Packet forwarding end *//
 /* USER CODE END 0 */
 
 /**
@@ -128,7 +680,12 @@ crc crcSlow(uint8_t const message[], int nBytes);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+	/*
+	// Debug variables
+	char buf[200];
+	long lastMillis = 0;
+	long millis = 0;
+	*/
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -149,26 +706,52 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
+  MX_USART1_UART_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_IT(&huart2, rx_buf, L1_PDU_size);
+	HAL_UART_Receive_IT(&huart1, rx_buf, L1_PDU_size);
+    HAL_TIM_Base_Start_IT(&htim3);
+	// Zustandsuebergangsdiagramm reset
+	zustand = Z_idle;
+	aktion = A_idle;
+	pat();
+
+	// Reset LEDs
+	for(int i = 0; i < NUM_PIXELS; i++){
+		pixels[i].color.g = 0;
+		pixels[i].color.r = 0;
+		pixels[i].color.b = 0;
+	}
+	writeLEDs(pixels);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+	while (1)
+	{
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /*
-	  HAL_UART_Receive_IT(&huart2, rx_buf, L1_PDU_size); // Receive L1_PDU from USART
-		  while(!tx_complete){ // wait for response packet to ensure "one packet in, one packet out" rule; when a packet is discarded, tx_complete is also set
-		  }
-		  tx_complete = 0;
-	  } */
+		/* DEBUG Output on USART2
+		millis = HAL_GetTick(); // get current elapsed time in milliseconds
 
-  }
+		// rising edge at button pin was detected and DEBOUNCE_INTERVAL has elapsed since last rising edge
+		if ((millis - lastMillis) > 500){
+			sprintf (buf, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n", state, errorId, partnerId, packageId, Lager[0], Lager[1], Lager[2], Lager[3], Lager[4], Lager[5],
+							tempLager[0], tempLager[1], tempLager[2], tempLager[3], tempLager[4], tempLager[5], flag_send, flag_await, receive,
+							passOn, create, deliver, poll, await, finishedSend, finishedStore, failure, receivedSDU, GPIO_neighbour_in);
+			HAL_UART_Transmit_IT(&huart2, buf, strlen(buf));
+			lastMillis = millis;
+		}
+		*/
+
+	  std();
+	  pat();
+	}
   /* USER CODE END 3 */
 }
 
@@ -219,6 +802,143 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 100;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 10000;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 4200;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -252,6 +972,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -271,11 +1007,20 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, S_N1_Pin|S_N2_Pin|S_N3_Pin|S_N4_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : R_N1_Pin R_N2_Pin R_N3_Pin R_N4_Pin */
+  GPIO_InitStruct.Pin = R_N1_Pin|R_N2_Pin|R_N3_Pin|R_N4_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
@@ -284,7 +1029,26 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : S_N1_Pin S_N2_Pin S_N3_Pin S_N4_Pin */
+  GPIO_InitStruct.Pin = S_N1_Pin|S_N2_Pin|S_N3_Pin|S_N4_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
@@ -296,12 +1060,13 @@ static void MX_GPIO_Init(void)
 // Rx Transfer completed callbacks.
 // Gets called when HAL_UART_Receive_IT receive is completed
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-	for(int i = 0; i < L1_PDU_size; i++){ // copy received packet from buffer
-		L1_PDU[i] = rx_buf[i];
+	if(huart->Instance == USART1){ // check if something was received on UART1
+		for(int i = 0; i < L1_PDU_size; i++){ // copy received packet from buffer
+			L1_PDU[i] = rx_buf[i];
+		}
 	}
 
   L1_receive(L1_PDU); // Pass L1_PDU to protocol stack
-  HAL_UART_Receive_IT(&huart2, rx_buf, L1_PDU_size); // Attach interrupt to receive L1_PDU from USART
 }
 
 // Tx Transfer completed callbacks.
@@ -313,13 +1078,35 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
 // GPIO interrupt callback
 // increments button press counter
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
-	millis = HAL_GetTick(); // get current elapsed time in milliseconds
-
 	// rising edge at button pin was detected and DEBOUNCE_INTERVAL has elapsed since last rising edge
-	if (GPIO_Pin == B1_Pin && (millis - lastPress) > DEBOUNCE_INTERVAL){
-		cnt++;
-		lastPress = millis;
+	if (GPIO_Pin == B1_Pin){
+		millis = HAL_GetTick(); // get current elapsed time in milliseconds
+		if((millis - lastPress) > DEBOUNCE_INTERVAL){
+			cnt++;
+			lastPress = millis;
+		}
 	}
+
+	// rising edge at neighbour receive pin 1 was detected and packet should be received from neighbour 1
+	if((GPIO_Pin == R_N1_Pin) && (neighbourIDs[0] == partnerId)){
+		GPIO_neighbour_in = TRUE;
+	}
+
+	// rising edge at neighbour receive pin 1 was detected and packet should be received from neighbour 1
+	if((GPIO_Pin == R_N2_Pin) && (neighbourIDs[1] == partnerId)){
+		GPIO_neighbour_in = TRUE;
+	}
+
+	// rising edge at neighbour receive pin 1 was detected and packet should be received from neighbour 1
+	if((GPIO_Pin == R_N3_Pin) && (neighbourIDs[2] == partnerId)){
+		GPIO_neighbour_in = TRUE;
+	}
+
+	// rising edge at neighbour receive pin 1 was detected and packet should be received from neighbour 1
+	if((GPIO_Pin == R_N4_Pin) && (neighbourIDs[3] == partnerId)){
+		GPIO_neighbour_in = TRUE;
+	}
+
 }
 
 /* protocol stack functions begin */
@@ -374,6 +1161,29 @@ void L7_receive(uint8_t L7_PDU[]){
 		L7_SDU[i] = L7_PDU[i+1];
 	}
 
+	// ApNr 42
+	// await / create package
+	// send back received L7_SDU
+	if(L7_PDU[0] == 42){
+		ApNr_42(L7_SDU, L7_SDU_send);
+		L7_send(42, L7_SDU_send);
+	}
+
+	// ApNr 43
+	// pass on / deliver package
+	// send back received L7_SDU
+	if(L7_PDU[0] == 43){
+		ApNr_43(L7_SDU, L7_SDU_send);
+		L7_send(43, L7_SDU_send);
+	}
+
+	// ApNr 50
+	// poll status
+	if(L7_PDU[0] == 50){
+		ApNr_50(L7_SDU, L7_SDU_send);
+		L7_send(50, L7_SDU_send);
+	}
+
 	// ApNr 100
 	// turn on onboard LED if last byte of L7_SDU is not 0
 	// send back received L7_SDU
@@ -407,6 +1217,7 @@ void L7_receive(uint8_t L7_PDU[]){
 	}
 
 	tx_complete = 1;  // ApNr invalid (unknown) -> discard packet
+	HAL_UART_Receive_IT(&huart1, rx_buf, L1_PDU_size); // Attach interrupt to receive L1_PDU from USART
 }
 
 void L7_send(uint8_t ApNr, uint8_t L7_SDU[]){
@@ -458,9 +1269,66 @@ void L1_send(uint8_t L1_SDU[]){
 	}
 	L1_PDU[15] = 0; // EOF: 0
 
-	HAL_UART_Transmit_IT(&huart2, L1_PDU, L1_PDU_size); // send L1_PDU over USART2 (non-blocking)
+	HAL_UART_Transmit_IT(&huart1, L1_PDU, L1_PDU_size); // send L1_PDU over USART2 (non-blocking)
 }
 /* protocol stack functions end */
+// ApNr 42
+// await / create package
+// send back received L7_SDU
+void ApNr_42(uint8_t L7_SDU[], uint8_t L7_SDU_send[]){
+	packageId = L7_SDU[0];
+	partnerId = L7_SDU[1];
+
+	receivedSDU = TRUE;
+	ApNr = 42;
+
+	if(partnerId != 0){ // partnerId is not 0 -> await new package
+		await = TRUE;
+	} else { // partnerId is 0 -> create new package
+		create = TRUE;
+	}
+
+	for(int i = 0; i < L7_SDU_size; i++){ // copy L7_SDU to L7_SDU_send
+		L7_SDU_send[i] = L7_SDU[i];
+	}
+}
+
+// ApNr 43
+// pass on / deliver package
+// send back received L7_SDU
+void ApNr_43(uint8_t L7_SDU[], uint8_t L7_SDU_send[]){
+	packageId = L7_SDU[0];
+	partnerId = L7_SDU[1];
+
+	receivedSDU = TRUE;
+	ApNr = 43;
+
+	if(partnerId != 0){ // partnerId is not 0 -> passOn package
+		passOn = TRUE;
+	} else { // partnerId is 0 -> deliver package
+		deliver = TRUE;
+	}
+
+	for(int i = 0; i < L7_SDU_size; i++){ // copy L7_SDU to L7_SDU_send
+		L7_SDU_send[i] = L7_SDU[i];
+	}
+}
+
+// ApNr 50
+// poll status
+void ApNr_50(uint8_t L7_SDU[], uint8_t L7_SDU_send[]){
+	poll = TRUE;
+
+	L7_SDU_send[0] = state;
+	if(state == 4){ // state is failure, send errorId instead of packageId
+		L7_SDU_send[1] = errorId;
+	} else {
+		L7_SDU_send[1] = packageId;
+	}
+	for(int i = 2; i < L7_SDU_size; i++){ // copy Lager to L7_SDU_send, index 2 to 7 //TODO: adapt to Lager size constant
+		L7_SDU_send[i] = Lager[i-2];
+	}
+}
 
 // ApNr 100
 // turn on onboard LED, if last byte of L7_SDU is not 0
