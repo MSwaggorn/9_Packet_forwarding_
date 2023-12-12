@@ -1,7 +1,7 @@
 # ES ULP 3
 
-[Kontextdiagramm, DFD und STD](/Kontextdiagramm_DFD_STD.pdf)
-[PAT](/PAT.pdf)
+[Kontextdiagramm, DFD und STD](/Documentation/Kontextdiagramm_DFD_STD.pdf)
+[PAT](/Documentation/PAT.pdf)
 
 ###  Datenverzeichnis
  
