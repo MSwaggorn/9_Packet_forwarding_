@@ -1,4 +1,8 @@
 # ES ULP 3
+
+[Kontextdiagramm, DFD und STD](/Kontextdiagramm_DFD_STD.pdf)
+[PAT](/PAT.pdf)
+
 ###  Datenverzeichnis
  
 `DATA state = " uint_8 "`  
@@ -73,9 +77,3 @@ Zuletzt wird überprüft, ob `packageId` eine gültige Paketnummer (zwischen ein
 
 #### resetData
 Setzt `packageId`, `partnerId`, `errorId` und `ApNr` auf `0`. Setzt `rceeive`, `passOn`, `create`, `deliver`, `poll`, `await`, `failure`, `finishedStore`, `finishedSend`, `receivedSDU`auf `FALSE`
-
-<object data="https://github.com/MSwaggorn/9_Packet_forwarding_/blob/main/Documentation/Kontextdiagramm_DFD_STD.pdf" type="application/pdf" width="700px" height="700px">
-    <embed src="https://github.com/MSwaggorn/9_Packet_forwarding_/blob/main/Documentation/Kontextdiagramm_DFD_STD.pdf">
-        <p>This browser does not support PDFs.</a>.</p>
-    </embed>
-</object>
