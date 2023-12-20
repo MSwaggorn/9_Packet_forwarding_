@@ -106,7 +106,7 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 /* GLOBALS */
-uint8_t myAddress = 3; // Board address
+uint8_t myAddress = 12; // Board address
 
 bool rx_complete = 0; // TRUE, when serial receive is complete and HAL_UART_RxCpltCallback is called
 bool tx_complete = 0; // TRUE, when serial transmit is complete and HAL_UART_TxCpltCallback is called
@@ -134,7 +134,7 @@ BOOL timer_irq = FALSE; // gets set HIGH every 750ms
 
 // Utility for ISR (not specified in SA/RT)
 uint16_t neighbourSendPins[NUM_NEIGHBOURS] = {S_N1_Pin, S_N2_Pin, S_N3_Pin, S_N4_Pin};
-const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {1, 12, 0, 0}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
+const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {1, 0, 0, 0}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
 
 //* Packet forwarding begin *//
 
@@ -323,8 +323,50 @@ void updateLager(void){
 	}
 }
 void animateSend(void){
-	 // TODO: animatoin
-	for(int i = 0; i < LAGER_SIZE; i++){
+	BOOL on = FALSE;
+	BOOL wait = FALSE;
+	uint8_t i = 0;
+
+	// find index of Lager, were packageId was stored //TODO: SA/RT Lager noch rein!!
+	for(i = 0; i < LAGER_SIZE; i++){
+		if(Lager[i] == packageId){
+			break;
+		}
+	}
+
+	// turn off corresponding LED
+	pixels[i+1].color.g = 0; // TODO: SA/RT
+	pixels[i+1].color.r = 0;
+	pixels[i+1].color.b = 0;
+	writeLEDs(pixels);
+
+
+	// blink last (outgoing) LED once
+	timer_irq = FALSE;
+	while(1){
+		if(timer_irq && !on && !wait){
+			timer_irq = FALSE;
+			on = TRUE;
+			pixels[7].color.g = (uint8_t)LEDColors[packageId][1]*0.1; // TODO: SA/RT
+			pixels[7].color.r = (uint8_t)LEDColors[packageId][0]*0.1;
+			pixels[7].color.b = (uint8_t)LEDColors[packageId][2]*0.1;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && on && !wait){
+			timer_irq = FALSE;
+			wait = TRUE;
+			pixels[7].color.g = 0; // TODO: SA/RT
+			pixels[7].color.r = 0;
+			pixels[7].color.b = 0;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && wait){
+			break;
+		}
+	}
+
+	// display current Lager
+	for(i = 0; i < LAGER_SIZE; i++){
 		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
 		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
 		pixels[i+1].color.b = (uint8_t)LEDColors[tempLager[i]][2]*0.1;
@@ -332,8 +374,36 @@ void animateSend(void){
 	}
 	writeLEDs(pixels);
 }
+
 void animateReceive(void){
- // TODO: animatoin
+	BOOL on = FALSE;
+	BOOL wait = FALSE;
+
+	// blink first (incoming) LED once
+	timer_irq = FALSE;
+	while(1){
+		if(timer_irq && !on && !wait){
+			timer_irq = FALSE;
+			on = TRUE;
+			pixels[0].color.g = (uint8_t)LEDColors[packageId][1]*0.1; // TODO: SA/RT
+			pixels[0].color.r = (uint8_t)LEDColors[packageId][0]*0.1;
+			pixels[0].color.b = (uint8_t)LEDColors[packageId][2]*0.1;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && on && !wait){
+			timer_irq = FALSE;
+			wait = TRUE;
+			pixels[0].color.g = 0; // TODO: SA/RT
+			pixels[0].color.r = 0;
+			pixels[0].color.b = 0;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && wait){
+			break;
+		}
+	}
+
+	// display current Lager
 	for(int i = 0; i < LAGER_SIZE; i++){
 		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
 		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
@@ -343,28 +413,46 @@ void animateReceive(void){
 	writeLEDs(pixels);
 }
 void animateCreate(void){
-	/*
-	// Blink first LED once
-	while(1){
-		if(timer_irq){
-			timer_irq = FALSE;
-			pixels[0].color.g = (uint8_t)LEDColors[packageId][1]*0.1; // TODO: SA/RT
-			pixels[0].color.r = (uint8_t)LEDColors[packageId][0]*0.1;
-			pixels[0].color.b = (uint8_t)LEDColors[packageId][2]*0.1;
-			writeLEDs(pixels);
-		}
-		if(timer_irq){
-			timer_irq = FALSE;
-			pixels[0].color.g = 0; // TODO: SA/RT
-			pixels[0].color.r = 0;
-			pixels[0].color.b = 0;
-			writeLEDs(pixels);
+
+	BOOL on = FALSE;
+	BOOL wait = FALSE;
+	uint8_t i = 0;
+
+	// find index of tempLager, were packageId is stored
+	for(i = 0; i < LAGER_SIZE; i++){
+		if(tempLager[i] == packageId){
 			break;
 		}
-	}*/
+	}
 
-	for(int i = 0; i < LAGER_SIZE; i++){
-		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
+	// blink corresponding LED once
+	timer_irq = FALSE;
+	while(1){
+		if(timer_irq && !on && !wait){
+			timer_irq = FALSE;
+			on = TRUE;
+			pixels[i+1].color.g = (uint8_t)LEDColors[packageId][1]*0.1; // TODO: SA/RT
+			pixels[i+1].color.r = (uint8_t)LEDColors[packageId][0]*0.1;
+			pixels[i+1].color.b = (uint8_t)LEDColors[packageId][2]*0.1;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && on && !wait){
+			timer_irq = FALSE;
+			wait = TRUE;
+			pixels[i+1].color.g = 0; // TODO: SA/RT
+			pixels[i+1].color.r = 0;
+			pixels[i+1].color.b = 0;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && wait){
+			break;
+		}
+
+	}
+
+	// display current Lager
+	for(i = 0; i < LAGER_SIZE; i++){
+		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1; //TODO: greift auch auf temp
 		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
 		pixels[i+1].color.b = (uint8_t)LEDColors[tempLager[i]][2]*0.1;
 
@@ -372,7 +460,43 @@ void animateCreate(void){
 	writeLEDs(pixels);
 }
 void animateDeliver(void){
-	 // TODO: animatoin
+	BOOL on = FALSE;
+	BOOL wait = FALSE;
+	uint8_t i = 0;
+
+	// find index of Lager, were packageId was stored //TODO: SA/RT Lager noch rein!!
+	for(i = 0; i < LAGER_SIZE; i++){
+		if(Lager[i] == packageId){
+			break;
+		}
+	}
+
+	// blink corresponding LED once
+	timer_irq = FALSE;
+	while(1){
+		if(timer_irq && !on && !wait){
+			timer_irq = FALSE;
+			on = TRUE;
+			pixels[i+1].color.g = (uint8_t)LEDColors[packageId][1]*0.1; // TODO: SA/RT
+			pixels[i+1].color.r = (uint8_t)LEDColors[packageId][0]*0.1;
+			pixels[i+1].color.b = (uint8_t)LEDColors[packageId][2]*0.1;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && on && !wait){
+			timer_irq = FALSE;
+			wait = TRUE;
+			pixels[i+1].color.g = 0; // TODO: SA/RT
+			pixels[i+1].color.r = 0;
+			pixels[i+1].color.b = 0;
+			writeLEDs(pixels);
+		}
+		if(timer_irq && wait){
+			break;
+		}
+
+	}
+
+	// display current Lager
 	for(int i = 0; i < LAGER_SIZE; i++){
 		pixels[i+1].color.g = (uint8_t)LEDColors[tempLager[i]][1]*0.1;
 		pixels[i+1].color.r = (uint8_t)LEDColors[tempLager[i]][0]*0.1;
