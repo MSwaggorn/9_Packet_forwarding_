@@ -106,7 +106,7 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 /* GLOBALS */
-uint8_t myAddress = 0x01; // Board address
+uint8_t myAddress = 3; // Board address
 
 bool rx_complete = 0; // TRUE, when serial receive is complete and HAL_UART_RxCpltCallback is called
 bool tx_complete = 0; // TRUE, when serial transmit is complete and HAL_UART_TxCpltCallback is called
@@ -134,7 +134,7 @@ BOOL timer_irq = FALSE; // gets set HIGH every 750ms
 
 // Utility for ISR (not specified in SA/RT)
 uint16_t neighbourSendPins[NUM_NEIGHBOURS] = {S_N1_Pin, S_N2_Pin, S_N3_Pin, S_N4_Pin};
-const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {2, 5, 6, 7}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
+const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {1, 12, 0, 0}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
 
 //* Packet forwarding begin *//
 
@@ -1065,7 +1065,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 			L1_PDU[i] = rx_buf[i];
 		}
 	}
-
+  HAL_UART_Receive_IT(&huart1, rx_buf, L1_PDU_size); // Attach interrupt to receive L1_PDU from USART
   L1_receive(L1_PDU); // Pass L1_PDU to protocol stack
 }
 
@@ -1144,11 +1144,13 @@ void L3_receive(uint8_t L3_PDU[]){
 	if(L3_PDU[0] != MMCP_MASTER_ADDRESS && L3_PDU[1] == MMCP_MASTER_ADDRESS && L3_PDU[2] == MMCP_VERSION){ // packet is not addressed to master, is from master and version is correct -> packet is valid
 		if(L3_PDU[0] == myAddress){ // packet is addressed to this device -> pass packet to next Layer
 			L7_receive(L3_SDU); // L3_SDU = L7_PDU)
-		} else { // packet is addressed to different device -> forward packet
-			L3_PDU[3]++; // increment hop-counter
-			L2_send(L3_PDU);
 		}
-	} else { // packet is addressed from master to master (invalid) -> discard packet
+	}
+	if(L3_PDU[0] != myAddress && L3_PDU[2] == MMCP_VERSION){ // packet is addressed to different device -> forward packet
+		L3_PDU[3]++; // increment hop-counter
+		L2_send(L3_PDU);
+	}
+	else if(L3_PDU[0] == MMCP_MASTER_ADDRESS && L3_PDU[1] == MMCP_MASTER_ADDRESS && L3_PDU[2] == MMCP_VERSION){ // packet is addressed from master to master (invalid) -> discard packet
 		tx_complete = 1;
 	}
 }
@@ -1217,7 +1219,7 @@ void L7_receive(uint8_t L7_PDU[]){
 	}
 
 	tx_complete = 1;  // ApNr invalid (unknown) -> discard packet
-	HAL_UART_Receive_IT(&huart1, rx_buf, L1_PDU_size); // Attach interrupt to receive L1_PDU from USART
+//	HAL_UART_Receive_IT(&huart1, rx_buf, L1_PDU_size); // Attach interrupt to receive L1_PDU from USART
 }
 
 void L7_send(uint8_t ApNr, uint8_t L7_SDU[]){
