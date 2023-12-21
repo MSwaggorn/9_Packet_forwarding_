@@ -36,7 +36,7 @@
 /* USER CODE BEGIN PTD */
 //TODO: what if busy in state and receives ap nr other than 50 (poll)??? Dürfen prozesse kontrolllflüsse zurücksetzen??
 typedef uint8_t crc;
-typedef enum {FALSE, TRUE} BOOL;
+typedef enum {FALSE=0, TRUE=1} BOOL; //make sure the FALSE and TRUE get the value 0 and 1
 
 /* LED stuff */
 typedef union
@@ -53,6 +53,14 @@ typedef union
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+/* SETUP */
+// set the neighbor_id, 0 for no neighbor connected to the send and receive pins.
+# define N1_id 0
+# define N2_id 0
+# define N3_id 0
+# define N4_id 0
+
+
 /* DEFINES */
 # define MMCP_MASTER_ADDRESS 0
 # define MMCP_VERSION 5
@@ -81,10 +89,10 @@ typedef union
 #define POLYNOMIAL 0x9b
 
 /* LED stuff */
-#define NEOPIXEL_ZERO 34
-#define NEOPIXEL_ONE 67
+#define NEOPIXEL_ZERO 34 // appr. 1/3 of 105 
+#define NEOPIXEL_ONE 67 // appr. 2/3 of 105
 #define NUM_PIXELS 8
-#define DMA_BUFF_SIZE (NUM_PIXELS * 24) + 1
+#define DMA_BUFF_SIZE (NUM_PIXELS * 24) + 50 // time of 50 pules needed to comfirm the setting for NeoPixel
 
 //* Packet forwarding defines *//
 #define NUM_NEIGHBOURS 4
@@ -134,7 +142,7 @@ BOOL timer_irq = FALSE; // gets set HIGH every 750ms
 
 // Utility for ISR (not specified in SA/RT)
 uint16_t neighbourSendPins[NUM_NEIGHBOURS] = {S_N1_Pin, S_N2_Pin, S_N3_Pin, S_N4_Pin};
-const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {1, 0, 0, 0}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
+const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {N1_id, N2_id, N3_id, N4_id}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
 
 //* Packet forwarding begin *//
 
@@ -182,7 +190,7 @@ static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 void AL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart);
-void HAL_GPIO_EXTI_Callback ( uint16_t GPIO_Pin );
+void HAL_GPIO_EXTI_Callback (uint16_t GPIO_Pin);
 
 void L1_receive(uint8_t L1_PDU[]);
 void L2_receive(uint8_t L2_PDU[]);
@@ -232,7 +240,7 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
 }
 
 void writeLEDs(PixelRGB_t* pixel){
-	int i,j;
+	uint8_t i,j; //use uint8_t to safe RAM
 
 	pBuff = dmaBuffer;
 	  for (i = 0; i < NUM_PIXELS; i++)
@@ -249,9 +257,7 @@ void writeLEDs(PixelRGB_t* pixel){
 		   }
 		   pBuff++;
 	   }
-	  }
-	  dmaBuffer[DMA_BUFF_SIZE - 1] = 0; // last element must be 0!
-
+	  } 
 	  HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_3, dmaBuffer, DMA_BUFF_SIZE);
 }
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
@@ -276,8 +282,9 @@ void stateSent(void){
 void stateFailure(void){
 	state = 4;
 }
+
 void handleStore(void){
-	int i;
+	uint8_t i;
 
 	// copy Lager to tempLager
 	for(i = 0; i < LAGER_SIZE; i++){
@@ -296,7 +303,7 @@ void handleStore(void){
 	finishedStore = TRUE;
 }
 void handleSend(void){
-	int i;
+	uint_8 i; //use uint8_t to safe RAM
 
 	// copy Lager to tempLager
 	for(i = 0; i < LAGER_SIZE; i++){
@@ -314,6 +321,7 @@ void handleSend(void){
 
 	finishedSend = TRUE;
 }
+
 void updateLager(void){
 	int i;
 
@@ -322,6 +330,7 @@ void updateLager(void){
 		Lager[i] = tempLager[i];
 	}
 }
+
 void animateSend(void){
 	BOOL on = FALSE;
 	BOOL wait = FALSE;
@@ -1235,24 +1244,25 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 
 /* protocol stack functions begin */
 void L1_receive(uint8_t L1_PDU[]){
+	uint8_t i;
 	// remove first (SOF) and last (EOF) byte from packet to get L1_SDU
-	uint8_t L1_SDU[L1_SDU_size] = {0};
+	uint8_t L1_SDU[L1_SDU_size]; // no need to set to 0, if you overwrite all the elemets on the next line
 
-	for(int i = 0; i < L1_SDU_size; i++){
+	for(i = 0; i < L1_SDU_size; i++){
 		L1_SDU[i] = L1_PDU[i+1];
 	}
 	L2_receive(L1_SDU); // L1_SDU = L2_PDU
 }
 
 void L2_receive(uint8_t L2_PDU[]){
-	uint8_t L2_SDU[L2_SDU_size] = {0};
-	uint8_t checksum = L2_PDU[13]; // last byte is checksum
+	uint8_t L2_SDU[L2_SDU_size];
+	//uint8_t checksum = L2_PDU[13]; // last byte is checksum
 
 	for(int i = 0; i < L2_SDU_size; i++){ // remove last byte (checksum) to get L2_SDU
 		L2_SDU[i] = L2_PDU[i];
 	}
 
-	if(crcSlow(L2_SDU, L2_SDU_size) == checksum){ // checksum is valid -> pass packet to next Layer
+	if(crcSlow(L2_SDU, L2_SDU_size) == L2_PDU[13]){ // checksum is valid -> pass packet to next Layer
 		L3_receive(L2_SDU); // L2_SDU = L3_PDU
 	} else { // checksum is invalid -> discard packet
 		tx_complete = 1;
@@ -1260,7 +1270,7 @@ void L2_receive(uint8_t L2_PDU[]){
 }
 
 void L3_receive(uint8_t L3_PDU[]){
-	uint8_t L3_SDU[L3_SDU_size] = {0};
+	uint8_t L3_SDU[L3_SDU_size];
 
 	for(int i = 0; i < L3_SDU_size; i++){ // remove first 4 bytes (To, From, Vers, Hops) tp get L3_SDU
 		L3_SDU[i] = L3_PDU[i+4];
@@ -1280,8 +1290,8 @@ void L3_receive(uint8_t L3_PDU[]){
 }
 
 void L7_receive(uint8_t L7_PDU[]){
-	uint8_t L7_SDU[L7_SDU_size] = {0};
-	uint8_t L7_SDU_send[L7_SDU_size] = {0}; // information to send back
+	uint8_t L7_SDU[L7_SDU_size];
+	uint8_t L7_SDU_send[L7_SDU_size]; // information to send back
 
 	for(int i = 0; i < L7_SDU_size; i++){ // remove first byte (ApNr) to get L7_SDU
 		L7_SDU[i] = L7_PDU[i+1];
@@ -1347,7 +1357,7 @@ void L7_receive(uint8_t L7_PDU[]){
 }
 
 void L7_send(uint8_t ApNr, uint8_t L7_SDU[]){
-	uint8_t L7_PDU[L7_PDU_size] = {0};
+	uint8_t L7_PDU[L7_PDU_size];
 
 	// copy ApNr and L7_SDU to get L7_PDU
 	L7_PDU[0] = ApNr;
@@ -1359,7 +1369,7 @@ void L7_send(uint8_t ApNr, uint8_t L7_SDU[]){
 }
 
 void L3_send(uint8_t L3_SDU[]){
-	uint8_t L3_PDU[L3_PDU_size] = {0};
+	uint8_t L3_PDU[L3_PDU_size];
 
 	L3_PDU[0] = MMCP_MASTER_ADDRESS; // To: Master
 	L3_PDU[1] = myAddress; // From: device
@@ -1373,7 +1383,7 @@ void L3_send(uint8_t L3_SDU[]){
 }
 
 void L2_send(uint8_t L2_SDU[]){
-	uint8_t L2_PDU[L2_PDU_size] = {0};
+	uint8_t L2_PDU[L2_PDU_size];
 	uint8_t checksum = 42;
 
 	// copy L2_SDU to first 13 bytes of L2_PDU
