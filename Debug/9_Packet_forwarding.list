@@ -4615,7 +4615,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
  800235c:	88fb      	ldrh	r3, [r7, #6]
  800235e:	2b02      	cmp	r3, #2
  8002360:	d107      	bne.n	8002372 <HAL_GPIO_EXTI_Callback+0x6a>
- 8002362:	2200      	movs	r2, #0
+ 8002362:	2203      	movs	r2, #3
  8002364:	4b13      	ldr	r3, [pc, #76]	; (80023b4 <HAL_GPIO_EXTI_Callback+0xac>)
  8002366:	781b      	ldrb	r3, [r3, #0]
  8002368:	429a      	cmp	r2, r3

@@ -134,7 +134,7 @@ BOOL timer_irq = FALSE; // gets set HIGH every 750ms
 
 // Utility for ISR (not specified in SA/RT)
 uint16_t neighbourSendPins[NUM_NEIGHBOURS] = {S_N1_Pin, S_N2_Pin, S_N3_Pin, S_N4_Pin};
-const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {1, 0, 0, 0}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
+const uint8_t neighbourIDs[NUM_NEIGHBOURS] = {1, 3, 0, 0}; // 0, if no neighbour at Pin // Input Pins are: R_N1_Pin, R_N2_Pin, R_N3_Pin, R_N4_Pin
 
 //* Packet forwarding begin *//
 
